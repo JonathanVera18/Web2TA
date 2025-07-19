@@ -1,47 +1,77 @@
 package com.example.demo.model;
 
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.Table;
+import jakarta.persistence.*;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+
+import java.time.LocalDateTime;
+import java.util.List;
 
 @Entity
-@Table(name = "Quiz")
+@Table(name = "quizzes")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class Quiz {
+    
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "quiz_id")
     private Long id;
 
-    @Column(name = "difficulty_level")
-    private String difficultyLevel;
-
-    @Column(name = "title")
+    @NotBlank(message = "Title is required")
+    @Size(min = 3, max = 255, message = "Title must be between 3 and 255 characters")
+    @Column(name = "title", nullable = false)
     private String title;
 
-    // Getters and setters...
-    public Long getId() {
-        return id;
+    @Size(max = 1000, message = "Description cannot exceed 1000 characters")
+    @Column(name = "description", columnDefinition = "TEXT")
+    private String description;
+
+    @NotNull(message = "Difficulty level is required")
+    @Enumerated(EnumType.STRING)
+    @Column(name = "difficulty_level", nullable = false)
+    private DifficultyLevel difficultyLevel;
+
+    @Column(name = "time_limit_minutes")
+    private Integer timeLimitMinutes;
+
+    @Column(name = "passing_score_percentage")
+    private Integer passingScorePercentage;
+
+    @Column(name = "is_active", nullable = false)
+    private Boolean isActive = true;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
+
+    @OneToMany(mappedBy = "quiz", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<Questions> questions;
+
+    @OneToMany(mappedBy = "quiz", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    private List<QuizAttempt> attempts;
+
+    @PrePersist
+    protected void onCreate() {
+        createdAt = LocalDateTime.now();
+        updatedAt = LocalDateTime.now();
     }
 
-    public void setId(Long id) {
-        this.id = id;
+    @PreUpdate
+    protected void onUpdate() {
+        updatedAt = LocalDateTime.now();
     }
 
-    public String getDifficultyLevel() {
-        return difficultyLevel;
-    }
-
-    public void setDifficultyLevel(String difficultyLevel) {
-        this.difficultyLevel = difficultyLevel;
-    }
-
-    public String getTitle() {
-        return title;
-    }
-
-    public void setTitle(String title) {
-        this.title = title;
+    public enum DifficultyLevel {
+        EASY, MEDIUM, HARD, EXPERT
     }
 }
