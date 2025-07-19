@@ -5,7 +5,9 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
 
 import io.jsonwebtoken.Claims;
@@ -15,35 +17,80 @@ import io.jsonwebtoken.security.Keys;
 
 @Component
 public class TokenUtils {
-    private static final String ACCESS_TOKEN_SECRET = "_ibIiyFG0R1rmQeCv668DWS9ZjqXsNFIiZ2GvLTVK1w=";
-    private static final long ACCESS_TOKEN_VALIDITY_SECONDS = 2 * 60 * 60;
+    
+    @Value("${jwt.secret}")
+    private String jwtSecret;
+    
+    @Value("${jwt.expiration}")
+    private long jwtExpiration;
 
-    public static String createToken(String username, String email) {
-        long expirationTime = ACCESS_TOKEN_VALIDITY_SECONDS * 1_000;
-        Date expirationDate = new Date(System.currentTimeMillis() + expirationTime);
+    public String generateToken(UserDetails userDetails) {
+        Map<String, Object> claims = new HashMap<>();
+        claims.put("username", userDetails.getUsername());
+        
+        return createToken(claims, userDetails.getUsername());
+    }
 
-        Map<String, Object> extra = new HashMap<>();
-        extra.put("username", username);
+    public String createToken(Map<String, Object> claims, String subject) {
+        Date now = new Date();
+        Date expiryDate = new Date(now.getTime() + jwtExpiration);
 
         return Jwts.builder()
-                .setSubject(email)
-                .setExpiration(expirationDate)
-                .addClaims(extra)
-                .signWith(Keys.hmacShaKeyFor(ACCESS_TOKEN_SECRET.getBytes()))
+                .setClaims(claims)
+                .setSubject(subject)
+                .setIssuedAt(now)
+                .setExpiration(expiryDate)
+                .signWith(Keys.hmacShaKeyFor(jwtSecret.getBytes()))
                 .compact();
+    }
+
+    public String getUsernameFromToken(String token) {
+        return getClaimFromToken(token, Claims::getSubject);
+    }
+
+    public Date getExpirationDateFromToken(String token) {
+        return getClaimFromToken(token, Claims::getExpiration);
+    }
+
+    public <T> T getClaimFromToken(String token, java.util.function.Function<Claims, T> claimsResolver) {
+        final Claims claims = getAllClaimsFromToken(token);
+        return claimsResolver.apply(claims);
+    }
+
+    private Claims getAllClaimsFromToken(String token) {
+        return Jwts.parserBuilder()
+                .setSigningKey(Keys.hmacShaKeyFor(jwtSecret.getBytes()))
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+    }
+
+    public Boolean validateToken(String token) {
+        try {
+            final String username = getUsernameFromToken(token);
+            return username != null && !isTokenExpired(token);
+        } catch (JwtException e) {
+            return false;
+        }
+    }
+
+    private Boolean isTokenExpired(String token) {
+        final Date expiration = getExpirationDateFromToken(token);
+        return expiration.before(new Date());
     }
 
     public static UsernamePasswordAuthenticationToken getAuthentication(String token) {
         try {
             Claims claims = Jwts.parserBuilder()
-                    .setSigningKey(ACCESS_TOKEN_SECRET.getBytes())
+                    .setSigningKey(Keys.hmacShaKeyFor(System.getenv("JWT_SECRET") != null ? 
+                        System.getenv("JWT_SECRET").getBytes() : 
+                        "MySuperSecretKey123!".getBytes()))
                     .build()
                     .parseClaimsJws(token)
                     .getBody();
 
-            String email = claims.getSubject();
-
-            return new UsernamePasswordAuthenticationToken(email, null, Collections.emptyList());
+            String username = claims.getSubject();
+            return new UsernamePasswordAuthenticationToken(username, null, Collections.emptyList());
         } catch (JwtException e) {
             return null;
         }

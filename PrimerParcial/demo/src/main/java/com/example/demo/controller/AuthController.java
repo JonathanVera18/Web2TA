@@ -1,10 +1,10 @@
 package com.example.demo.controller;
 
 import com.example.demo.model.AuthenticationRequest;
-import com.example.demo.model.AuthenticationResponse;
 import com.example.demo.model.User;
 import com.example.demo.repository.UserRepository;
 import com.example.demo.config.TokenUtils;
+import com.example.demo.config.SecurityUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -39,11 +39,19 @@ public class AuthController {
     @PostMapping("/login")
     public ResponseEntity<?> authenticateUser(@RequestBody AuthenticationRequest authenticationRequest) {
         try {
+            // Validate input
+            if (authenticationRequest.getUsername() == null || authenticationRequest.getPassword() == null) {
+                Map<String, String> error = new HashMap<>();
+                error.put("message", "Username and password are required");
+                return ResponseEntity.badRequest().body(error);
+            }
+
+            // Sanitize input
+            String username = SecurityUtils.sanitizeInput(authenticationRequest.getUsername());
+            String password = authenticationRequest.getPassword();
+
             Authentication authentication = authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(
-                    authenticationRequest.getUsername(),
-                    authenticationRequest.getPassword()
-                )
+                new UsernamePasswordAuthenticationToken(username, password)
             );
 
             UserDetails userDetails = (UserDetails) authentication.getPrincipal();
@@ -68,20 +76,41 @@ public class AuthController {
     @PostMapping("/register")
     public ResponseEntity<?> registerUser(@RequestBody User user) {
         try {
+            // Validate input
+            if (user.getUsername() == null || user.getEmail() == null || user.getPassword() == null) {
+                Map<String, String> error = new HashMap<>();
+                error.put("message", "Username, email, and password are required");
+                return ResponseEntity.badRequest().body(error);
+            }
+
+            // Validate and sanitize input
+            String username = SecurityUtils.validateAndSanitizeUsername(user.getUsername());
+            String email = SecurityUtils.validateAndSanitizeEmail(user.getEmail());
+            
+            if (!SecurityUtils.meetsPasswordRequirements(user.getPassword())) {
+                Map<String, String> error = new HashMap<>();
+                error.put("message", "Password must be at least 6 characters long and contain both letters and numbers");
+                return ResponseEntity.badRequest().body(error);
+            }
+
             // Check if username already exists
-            if (userRepository.findByUsername(user.getUsername()).isPresent()) {
+            if (userRepository.findByUsername(username).isPresent()) {
                 Map<String, String> error = new HashMap<>();
                 error.put("message", "Username already exists");
                 return ResponseEntity.badRequest().body(error);
             }
 
             // Check if email already exists
-            if (userRepository.findByEmail(user.getEmail()).isPresent()) {
+            if (userRepository.findByEmail(email).isPresent()) {
                 Map<String, String> error = new HashMap<>();
                 error.put("message", "Email already exists");
                 return ResponseEntity.badRequest().body(error);
             }
 
+            // Set sanitized values
+            user.setUsername(username);
+            user.setEmail(email);
+            
             // Encode password
             user.setPassword(passwordEncoder.encode(user.getPassword()));
             
@@ -92,6 +121,10 @@ public class AuthController {
             response.put("user", savedUser);
             
             return ResponseEntity.ok(response);
+        } catch (IllegalArgumentException e) {
+            Map<String, String> error = new HashMap<>();
+            error.put("message", e.getMessage());
+            return ResponseEntity.badRequest().body(error);
         } catch (Exception e) {
             Map<String, String> error = new HashMap<>();
             error.put("message", "Registration failed: " + e.getMessage());
@@ -102,32 +135,48 @@ public class AuthController {
     @PostMapping("/refresh")
     public ResponseEntity<?> refreshToken(@RequestHeader("Authorization") String token) {
         try {
-            if (token != null && token.startsWith("Bearer ")) {
-                String jwt = token.substring(7);
-                String username = tokenUtils.getUsernameFromToken(jwt);
-                
-                if (username != null && tokenUtils.validateToken(jwt)) {
-                    UserDetails userDetails = userRepository.findByUsername(username)
-                        .map(user -> org.springframework.security.core.userdetails.User
-                            .withUsername(user.getUsername())
-                            .password(user.getPassword())
-                            .authorities("USER")
-                            .build())
-                        .orElse(null);
-                    
-                    if (userDetails != null) {
-                        String newToken = tokenUtils.generateToken(userDetails);
-                        Map<String, Object> response = new HashMap<>();
-                        response.put("token", newToken);
-                        response.put("type", "Bearer");
-                        return ResponseEntity.ok(response);
-                    }
-                }
+            if (token == null || !token.startsWith("Bearer ")) {
+                Map<String, String> error = new HashMap<>();
+                error.put("message", "Invalid token format");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
             }
+
+            String jwt = token.substring(7);
             
-            Map<String, String> error = new HashMap<>();
-            error.put("message", "Invalid token");
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
+            if (!SecurityUtils.isValidJwtFormat(jwt)) {
+                Map<String, String> error = new HashMap<>();
+                error.put("message", "Invalid token format");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
+            }
+
+            String username = tokenUtils.getUsernameFromToken(jwt);
+            
+            if (username == null || !tokenUtils.validateToken(jwt)) {
+                Map<String, String> error = new HashMap<>();
+                error.put("message", "Invalid or expired token");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
+            }
+
+            Optional<User> userOpt = userRepository.findByUsername(username);
+            if (userOpt.isEmpty()) {
+                Map<String, String> error = new HashMap<>();
+                error.put("message", "User not found");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
+            }
+
+            User user = userOpt.get();
+            UserDetails userDetails = org.springframework.security.core.userdetails.User
+                .withUsername(user.getUsername())
+                .password(user.getPassword())
+                .authorities("ROLE_USER")
+                .build();
+
+            String newToken = tokenUtils.generateToken(userDetails);
+            Map<String, Object> response = new HashMap<>();
+            response.put("token", newToken);
+            response.put("type", "Bearer");
+            return ResponseEntity.ok(response);
+            
         } catch (Exception e) {
             Map<String, String> error = new HashMap<>();
             error.put("message", "Token refresh failed");
@@ -138,21 +187,36 @@ public class AuthController {
     @GetMapping("/me")
     public ResponseEntity<?> getCurrentUser(@RequestHeader("Authorization") String token) {
         try {
-            if (token != null && token.startsWith("Bearer ")) {
-                String jwt = token.substring(7);
-                String username = tokenUtils.getUsernameFromToken(jwt);
-                
-                if (username != null && tokenUtils.validateToken(jwt)) {
-                    Optional<User> user = userRepository.findByUsername(username);
-                    if (user.isPresent()) {
-                        return ResponseEntity.ok(user.get());
-                    }
-                }
+            if (token == null || !token.startsWith("Bearer ")) {
+                Map<String, String> error = new HashMap<>();
+                error.put("message", "Invalid token format");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
             }
+
+            String jwt = token.substring(7);
             
-            Map<String, String> error = new HashMap<>();
-            error.put("message", "Invalid token");
-            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
+            if (!SecurityUtils.isValidJwtFormat(jwt)) {
+                Map<String, String> error = new HashMap<>();
+                error.put("message", "Invalid token format");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
+            }
+
+            String username = tokenUtils.getUsernameFromToken(jwt);
+            
+            if (username == null || !tokenUtils.validateToken(jwt)) {
+                Map<String, String> error = new HashMap<>();
+                error.put("message", "Invalid or expired token");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
+            }
+
+            Optional<User> user = userRepository.findByUsername(username);
+            if (user.isPresent()) {
+                return ResponseEntity.ok(user.get());
+            } else {
+                Map<String, String> error = new HashMap<>();
+                error.put("message", "User not found");
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
+            }
         } catch (Exception e) {
             Map<String, String> error = new HashMap<>();
             error.put("message", "Authentication failed");
